@@ -1,0 +1,778 @@
+---
+title: "Boston Snow Prediction"
+author: "Mariam Serag, Crystal Lee, Salma Mohammed"
+date: "3/16/2020"
+output: 
+  word_document:
+    toc: TRUE
+---
+
+[TOC]
+
+
+# Introduction
+
+
+In this case, we want to predict which day might snow based on some indicators, such as tempreture, dew point, humidity, sea level pressure, visibility, and wind. Therefore, from our previous assignment dataset, we chose `snow` as our target variable and picked other indicators as our independant variables that might be helpful to do a classification task
+
+In part 1 of the assignemnt, we used descriptive statistics and plots to inspect a distribution of each variable and the relationship between the previously mentioned predictor values and our target variable, snow. Based on the correlation between variables, we selected several important variables to predict whether it will snow or not in a day. 
+
+In part 2, we included these variables to conduct a classification task and deployed models, including logistic regression, k-nearest neighbors and decision tree. To improve the performance of each model, we removed outliers, selected important features, tuned parameters. Finally,  we select the best one as our model through comparing performance of these models.
+
+
+# Part 1. Descriptive Statistics
+
+```{r setup, include=FALSE}
+# import neccessary parckages and our dataset
+rm(list=ls())
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(forecast)
+library(car)
+library(leaps)
+library(caret)
+library(ggplot2)
+library(skimr)
+library(rattle)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+```
+
+## 1.1 Examining the dataset and cleaning data
+
+#### Examing the dataset:
+
+```{r}
+bostonweather = read.csv('Boston weather_clean.csv')
+glimpse(bostonweather)
+```
+
+
+
+As we can see in this dataset, there are 24 variables and 3653 observations. All variables are integer and numeric variables without any missing values. However, we observe some problems:
+
+1. Each indicator have three variables, including average value, maximum value and minimum value. It cause our dataset to have lots of similar variables, such as `Avg.Temp`, `High Temp` and `Low Temp`. In order to avoid multicollinearity and overfitting, we just choose one of them in each indicator through an exploratory analysis.
+
+2. Column names look too complex and are hard to call these variables in functions, so it is better to change them into simple names.
+
+3. `Month` are numerical variables in our dataset but they should be categorical variables. Therefore, we should change their data types.
+
+4. `Day` column is just used for identifying observations. Specifically, it is like an ID for each obsercation. Thus, it is meaningless in this case and we should drop it.
+
+5. `Year` variable is not useful to predict future events, and thus we will remove this column later.
+
+6. `Events` is based on two variables, `Snowfall..in.` and `Precip..in.`. Since we view `Events` as our target variable, these two variables are meaningless in our analysis.
+
+
+#### Inspecting the distribution of the target variable:
+
+```{r warning=FALSE, message=FALSE, fig.width=8, fig.height=5}
+
+ggplot(bostonweather, aes(x=Events)) + 
+geom_bar(stat = 'count', fill='lightskyblue', width=0.6) + 
+labs(title = 'The Number of Weather Events', 
+     x     = 'Weather Events',
+     y     = 'Count')
+
+```
+
+In this case, we want to conduct binary classification. Thus, we simplify our problem to predict whether it will snow or not. That is, we create a new variable called `snow` (See the following chunk). This variables only include two values: `TRUE` and `FALSE`. `TURE` means it snowed that day. Otherwise. it didn't snow.
+
+
+
+```{r warning=FALSE, message=FALSE, fig.width=8, fig.height=5}
+bostonweather = bostonweather %>%
+                mutate(snow=ifelse(Events %in% c('Both', 'Snow'), TRUE, FALSE))
+
+ggplot(bostonweather, aes(x=snow)) + 
+     geom_bar(stat = 'count', fill='steelblue2', width = 0.6) + 
+     labs(title = 'The Number of Days with and without snow falling', 
+          x     = 'Snow',
+          y     = 'Count') 
+
+
+```
+
+In the past 10 years, the total number of snow days was less than 500 days, but there were over 3000 days without snow falling. Obviously, two classes are imbalanced. Therefore, we have to consider other metircs rather than accuracy, such as precision,  while evaluating performances of models.
+
+
+#### Adjusting our dataset to solve problems we found before:
+
+```{r message=FALSE}
+# Drop variables
+bostonweather[c('Year','Day', 'Snowfall..in.', 'Precip..in.','Events')] = NULL
+
+
+# Change column names 
+names(bostonweather)[1:19] =
+  c('month', 'high_temp', 'avg_temp', 'low_temp', 'high_dew', 'avg_dew', 'low_dew', 'high_humidity', 'avg_humidity', 'low_humidity', 'high_sealevel', 'avg_sealevel', 'low_sealevel', 'high_visibility', 'avg_visibility', 'low_visibility', 'high_wind', 'avg_wind', 'high_wind_gust')
+
+
+# Transform `Month` and 'Event' to categorical variables
+bostonweather['month'] = factor(bostonweather[['month']])
+
+```
+
+Note: Because we define our target variable as `snow` instead of `Events`, we have to drop the `Events` column as well.
+
+
+
+## 1.2. Examine relationships between the target variable and predictors
+
+#### Snow Days By Month 
+
+```{r Warning=TRUE}
+bostonweather %>%
+  group_by(month) %>%
+  summarise(snowdays = sum(snow)) %>%
+  ggplot(aes(x=month, y=snowdays)) +
+  geom_bar(stat = 'identity', fill='steelblue2', width=0.8) +
+  labs(x="Month", y="Snow Days", title="Snow Days per Month") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+```
+
+We can see there is a strong relationship between `month` and `snow`. It makes sence because it usually doesn't snow during Summer.  
+
+
+#### Snow Days By Temperature 
+```{r}
+p1 = ggplot(bostonweather, aes(x=snow, y=low_temp)) +
+  geom_boxplot(fill = "lightskyblue", color = "dodgerblue2") +
+  scale_x_discrete(labels=c("No Snow", "Snow")) + 
+  labs(x=NULL, y=NULL, title="Low Temperature") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p2 = ggplot(bostonweather, aes(x=snow, y=avg_temp)) +
+  geom_boxplot(fill = "lightskyblue", color = "dodgerblue2") +
+  scale_x_discrete(labels=c("No Snow", "Snow")) + 
+  labs(x=NULL, y=NULL, title="Average Temperature") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p3 = ggplot(bostonweather, aes(x=snow, y=high_temp)) +
+  geom_boxplot(fill = "lightskyblue", color = "dodgerblue2") +
+  scale_x_discrete(labels=c("No Snow", "Snow")) + 
+  labs(x=NULL, y=NULL, title="High Temperature") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+cowplot::plot_grid(p1, p2, p3,  align = "v", nrow = 1)
+
+```
+
+`Temperature` and `Snow` have a signifiacant relationship in our plots because we can see there are huge differences in temperatures between snow days and non-snow days. We choose `low_temp` as one of predictors since it might have higher probability to snow if the lowest value of temperature is low enough in a certain day.
+
+
+#### Snow Days By Dew Point
+```{r}
+p1 = ggplot(bostonweather, aes(x=snow, y=low_dew)) +
+  geom_boxplot(fill = "lightskyblue", color = "dodgerblue2") +
+  scale_x_discrete(labels=c("No Snow", "Snow")) + 
+  labs(x=NULL, y=NULL, title="Low Dew Point") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p2 = ggplot(bostonweather, aes(x=snow, y=avg_dew)) +
+  geom_boxplot(fill = "lightskyblue", color = "dodgerblue2") +
+  scale_x_discrete(labels=c("No Snow", "Snow")) + 
+  labs(x=NULL, y=NULL, title="Average Dew Point") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p3 = ggplot(bostonweather, aes(x=snow, y=high_dew)) +
+  geom_boxplot(fill = "lightskyblue", color = "dodgerblue2") +
+  scale_x_discrete(labels=c("No Snow", "Snow")) + 
+  labs(x=NULL, y=NULL, title="High Dew Point") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+cowplot::plot_grid(p1, p2, p3,  align = "v", nrow = 1)
+```
+
+
+#### Snow Days By Humidity
+```{r}
+p1 = ggplot(bostonweather, aes(x=snow, y=low_humidity)) +
+  geom_boxplot(fill = "lightskyblue", color = "dodgerblue2") +
+  scale_x_discrete(labels=c("No Snow", "Snow")) + 
+  labs(x=NULL, y=NULL, title="Low Humidity") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p2 = ggplot(bostonweather, aes(x=snow, y=avg_humidity)) +
+  geom_boxplot(fill = "lightskyblue", color = "dodgerblue2") +
+  scale_x_discrete(labels=c("No Snow", "Snow")) + 
+  labs(x=NULL, y=NULL, title="Average Humidity") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p3 = ggplot(bostonweather, aes(x=snow, y=high_humidity)) +
+  geom_boxplot(fill = "lightskyblue", color = "dodgerblue2") +
+  scale_x_discrete(labels=c("No Snow", "Snow")) + 
+  labs(x=NULL, y=NULL, title="High Humidity") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+cowplot::plot_grid(p1, p2, p3,  align = "v", nrow = 1)
+```
+
+Like raining, snow need enough water in the air. Thus, `humidity` is obviously correlated with `snow`. Generally, there is a higher humidiy in snow days. In this case, we choose `high_temp` as one of predictors since it might have higher probability to snow if the highest value of humidity is high enough in a day.
+
+
+#### Snow Days By Sea Level
+```{r}
+p1 = ggplot(bostonweather, aes(x=snow, y=low_sealevel)) +
+  geom_boxplot(fill = "lightskyblue", color = "dodgerblue2") +
+  scale_x_discrete(labels=c("No Snow", "Snow")) + 
+  labs(x=NULL, y=NULL, title="Low Sea Level") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p2 = ggplot(bostonweather, aes(x=snow, y=avg_sealevel)) +
+  geom_boxplot(fill = "lightskyblue", color = "dodgerblue2") +
+  scale_x_discrete(labels=c("No Snow", "Snow")) + 
+  labs(x=NULL, y=NULL, title="Average Sea Level") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p3 = ggplot(bostonweather, aes(x=snow, y=high_sealevel)) +
+  geom_boxplot(fill = "lightskyblue", color = "dodgerblue2") +
+  scale_x_discrete(labels=c("No Snow", "Snow")) + 
+  labs(x=NULL, y=NULL, title="High Sea Level") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+cowplot::plot_grid(p1, p2, p3,  align = "v", nrow = 1)
+```
+
+There are slightly differences in `sea level` between days with and without snow falling. We select `low_sea_level` as our predictor because the difference looks more significant and it might be helpful for our models to classify.
+
+
+
+#### Snow Days By Visibility
+```{r}
+p1 = ggplot(bostonweather, aes(x=snow, y=low_visibility)) +
+  geom_boxplot(fill = "lightskyblue", color = "dodgerblue2") +
+  scale_x_discrete(labels=c("No Snow", "Snow")) + 
+  labs(x=NULL, y=NULL, title="Low Visibility") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p2 = ggplot(bostonweather, aes(x=snow, y=avg_visibility)) +
+  geom_boxplot(fill = "lightskyblue", color = "dodgerblue2") +
+  scale_x_discrete(labels=c("No Snow", "Snow")) + 
+  labs(x=NULL, y=NULL, title="Average Visibility") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p3 = ggplot(bostonweather, aes(x=snow, y=high_visibility)) +
+  geom_boxplot(fill = "lightskyblue", color = "dodgerblue2") +
+  scale_x_discrete(labels=c("No Snow", "Snow")) + 
+  labs(x=NULL, y=NULL, title="High Visibility") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+cowplot::plot_grid(p1, p2, p3,  align = "v", nrow = 1)
+```
+
+`low_visibility` as well as `ave_visibility` have strong relationships with `snow` in the above boxplots. Yet, there seems no relationship between `high_visibility` and `snow`. Hence, we choose `Low Visibility` as our predictor because we can clearly classify values of visibility between snow days and non-snow days.
+
+#### Snow Days By Wind
+```{r}
+p1 = ggplot(bostonweather, aes(x=snow, y=high_wind)) +
+  geom_boxplot(fill = "lightskyblue", color = "dodgerblue2") +
+  scale_x_discrete(labels=c("No Snow", "Snow")) + 
+  labs(x=NULL, y=NULL, title="High Wind") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p2 = ggplot(bostonweather, aes(x=snow, y=avg_wind)) +
+  geom_boxplot(fill = "lightskyblue", color = "dodgerblue2") +
+  scale_x_discrete(labels=c("No Snow", "Snow")) + 
+  labs(x=NULL, y=NULL, title="Average Wind") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p3 = ggplot(bostonweather, aes(x=snow, y=high_wind_gust)) +
+  geom_boxplot(fill = "lightskyblue", color = "dodgerblue2") +
+  scale_x_discrete(labels=c("No Snow", "Snow")) + 
+  labs(x=NULL, y=NULL, title="High_Wind_Gust") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+cowplot::plot_grid(p1, p2, p3,  align = "v", nrow = 1)
+```
+
+
+There are slightly differences in `wind` between days with and without snow falling. We select `high_wind` as our predictor because the difference looks more significant and it might be helpful for our models to classify.
+
+
+## 1.3 Examine relationships between predictors through corrplot
+
+```{r fig.width=8, fig.height=6}
+# create a corrplot
+library(corrplot)
+library(RColorBrewer)
+corrplot(cor(bostonweather[,c(4,7,8,13,16,17)]), method="color", type="upper", 
+         addCoef.col = "black", tl.col="black", tl.srt=30, 
+         sig.level = 0.01, insig = "blank", diag=FALSE,
+         number.cex=1, tl.cex=1, cl.ratio=0.3, cl.cex=1,
+         col = brewer.pal(n = 8, name = "RdYlBu"))
+```
+
+By making a corrplot, we can find some predictors have pretty higher correlation. In order to avoid multicollinearity, we should drop the `Dew_Point` column to remove a strong correlation between predictors.
+
+
+```{r}
+bostonweather_new = bostonweather[,c(1,4,8,13,16,17,20)]
+head(bostonweather_new)
+```
+
+
+
+
+#### Examining descriptive statistics and distributions of all variables
+
+```{r}
+skimr::skim(bostonweather[2:19])
+```
+
+
+```{r}
+psych::describe(bostonweather[-1])
+```
+
+Predictors have different scale of values and some predictors also have skewed distribution. We need to normalize them before implementing regression models
+
+
+
+
+
+
+# Part 2. Classification
+
+To Partition the data, we split it to 80% training, 10% validating and 10% testing. We chose our outcome variable to be snow because it was better to simplify our original outcome variable (Events: snow, rain, none, both), especially that snow causes the most disruption in people's plans and requires the most resources to handle. 
+
+
+```{r}
+# Partition data
+set.seed(1)
+inx_train    = caret::createDataPartition(bostonweather_new$snow, p=0.8)$Resample1 
+dta_train    = bostonweather_new[ inx_train, ] 
+dta_left     = bostonweather_new[-inx_train, ]
+inx_test     = caret::createDataPartition(dta_left$snow, p=0.5)$Resample1
+dta_test     = dta_left[ inx_test, ]
+dta_valid    = dta_left[ -inx_test, ]
+dim(dta_train)
+dim(dta_valid)
+dim(dta_test)
+```
+
+
+
+## 2-1. Logistic Regression
+
+
+*Run linear regression
+Here, we first started by chosing the variables that are statistically significant (p>0.05), we then started predicting to compare the different RMSE values for different models (one that attempts the interaction variable). Following that, we examined outliers and we attempting removing some points to see if that could improve our accuracy. 
+
+
+Trail One
+```{r}
+train_logit<- glm(snow ~ ., data = dta_train, family = "binomial"(link = "logit"))
+summary(train_logit)
+vif(train_logit) # all are below 3 which is great!
+```
+
+Trial Two
+
+```{r}
+#train_logit2<-glm(snow ~ low_visibility +low_temp+ low_sealevel, data = dta_train, family = "binomial"(link = "logit"))
+#summary(train_logit2)
+#vif(train_logit2)
+
+```
+
+Trial Three
+low sealevel still has a significance slightly over 0.05 so I take it out of the modelas per your criteria in the pdf
+```{r}
+train_logit3<-glm(snow ~ low_visibility+low_temp, data = dta_train, family = "binomial"(link = "logit"))
+summary(train_logit3)
+vif(train_logit3) # to check for multicolinearity, and all looks good
+
+```
+
+Prediction
+```{r}
+logit_pred <- predict(train_logit3, dta_valid, type = "response")
+
+```
+
+#Evaluating Our Model (The third one):
+
+1) Interpretation of odds: 
+
+Low visbility: For this, it means that a unit increase in low_visibility, decreases the chance of it snowing by 51.57% 
+
+Low temp: For this, it means that a unit increase in low_temp, decreases the chance of it snowing by 51.57% 
+
+2) Accuracy  : 0.9465 
+   Sensitivity : 0.9762         
+   Specificity : 0.6842 
+```{r}
+
+accuracy(logit_pred, dta_valid$snow) # RMSE : 0.1748351 
+# first 5 actual and predicted records
+data.frame(actual = dta_valid$snow[1:5], predicted = logit_pred[1:5]) # outcome is looking great so far! all were predicted correctly
+
+#Note: I don't think we need to use a gains or lifts chart here because we're simply speaking about whether it will snow or not, and the proportion of days were our model pays off the most is not really important. 
+
+
+# Odd ratios: 
+round(data.frame(summary(train_logit3)$coefficients, odds = exp(coef(train_logit3))),5) # the odds for low_visibility and low_temp look good (both less than one = realistic numbers) 
+
+
+#Confusion Matrix
+#confusionMatrix(as.factor(ifelse(logit_pred > 0.5, 1, 0)), as.factor(dta_valid$snow))
+logit_pred<-round(logit_pred,5)
+logit_pred <- as.factor(ifelse(logit_pred > 0.5, TRUE, FALSE))
+confusionMatrix(logit_pred , as.factor(dta_valid$snow)) 
+
+
+```
+
+
+#Attempting adding an Interaction variable and see if the model improves: 
+The model improves by a tiny bit! 
+
+```{r}
+# add higher order terms
+bostonweather_n_2 = bostonweather_new %>%
+                    mutate(low_visibility_sqrd = low_visibility^2,
+                           low_temp_sqrd = low_temp^2,
+                           vistemp = low_visibility*low_temp)
+                            
+dta_train.2 = bostonweather_n_2[ inx_train, ]
+dta_left.2  = bostonweather_n_2[-inx_train, ]
+dta_test.2  = dta_left.2[ inx_test, ]
+dta_valid.2 = dta_left.2[ -inx_test, ]
+
+train_logit4<-glm(snow ~ low_visibility+low_temp + vistemp, data = dta_train.2, family = "binomial"(link = "logit"))
+summary(train_logit4)
+valid_lm4_pred = predict(train_logit4, dta_valid.2, type = "response")
+accuracy(valid_lm4_pred, dta_valid.2$snow) # RMSE: 0.1673656
+```
+
+
+Adding a higher order variable: -> it doesn't really help! so we will stick with only adding the interaction variable. 
+
+```{r}
+#train_logit5<-glm(snow ~ low_visibility+low_temp + vistemp+low_visibility_sqrd, data = dta_train.2, family = "binomial"(link = "logit"))
+#summary(train_logit5)
+#valid_lm5_pred = predict(train_logit5, dta_valid.2, type = "response")
+#accuracy(valid_lm5_pred, dta_valid.2$snow) # RMSE: 0.175448
+```
+
+
+# Outliers Analysis:
+
+Here, we tried to remove some outliers because it doesn't seem like my residuals are completely random and there seems to be some trend which is not good for my model. However, when we tried to remove outliers, the model's RMSE got much higher! (i.e: worse!) So, we eventually decided to not remove any outliers.
+```{r}
+
+# a) Histogram of Residuals for our best model so far (model 3) .
+hist(train_logit4$residuals)
+
+# b & c) Normal Probability Plot of Residual and Residuals vs. Fitted Values
+#par(mfrow=c(2,2))
+plot(train_logit4)
+
+
+```
+
+* RMSE: 6.330079
+
+```{r}
+#dta_train.3 = dta_train.2[-c(3666),]
+#train_lm_3.3 = glm(snow ~ low_visibility+low_temp+vistemp, data = dta_train.3, family = "binomial"(link = "logit")) 
+#summary(train_lm_3.3 )
+
+#valid_pred_3.3 = predict(train_lm_3.3 , dta_valid.2)
+#accuracy(valid_pred_3.3, dta_valid.2$snow) # RMSE: 6.330079
+
+# a) Histogram of Residuals.
+#hist(train_lm_3.3 $residuals)
+
+# b & c) Normal Probability Plot of Residual and Residuals vs. Fitted Values
+#par(mfrow=c(2,2))
+#plot(train_lm_3.3 )
+
+```
+
+* RMSE 7.839649
+```{r}
+#dta_train.4 = dta_train.2[-c(2919, 3714, 1079),]
+#train_lm_4.4 = glm(snow ~ low_visibility+low_temp, data = dta_train.4, family = "binomial"(link = "logit")) 
+#summary(train_lm_4.4 )
+#valid_pred_4.4 = predict(train_lm_4.4 , dta_valid.2)
+#accuracy(valid_pred_4.4, dta_valid$snow) # RMSE 7.839649
+
+# a) Histogram of Residuals.
+#hist(train_lm_4.4 $residuals)
+
+# b & c) Normal Probability Plot of Residual and Residuals vs. Fitted Values
+#par(mfrow=c(2,2))
+#plot(train_lm_4.4 )
+
+```
+
+
+## 2-2. K-nearest Neighbors
+
+For the K-nearest Neighbor, we first started by normalizing the data, we then ended up trying different values for k. The best one was k=3. It gave us the below values:
+Accuracy : 0.9011
+Sensitivity : 0.9613          
+Specificity : 0.6842  
+
+```{r}
+# Normalizing the data
+normalize = function(x){return ((x - min(x)) / (max(x) - min(x)))}
+
+dta_train_knn<-dta_train
+dta_test_knn<-dta_test
+dta_valid_knn<-dta_valid
+
+dta_train_knn[,c(2:6)]<-normalize(dta_train[,c(2:6)])
+dta_test_knn[,c(2:6)]<-normalize(dta_test[,c(2:6)])
+dta_valid_knn[,c(2:6)]<-normalize(dta_valid[,c(2:6)])
+
+# Training model on dta_training 
+require("class")
+
+dta_train_knn_X = dta_train_knn[,-7]
+dta_test_knn_X = dta_test_knn[,-7]
+dta_valid_knn_X = dta_valid_knn[,-7]
+
+knn_model <-  knn(dta_train_knn_X, dta_valid_knn_X, dta_train_knn$snow, k=5)
+
+
+# Evaluating performance on dta_test  
+confusionMatrix(knn_model, as.factor(dta_valid_knn$snow))
+#k2 Accuracy : 0.8736
+#k3 Accuracy : 0.8874
+#k4 Accuracy : 0.8929 
+#k5 Accuracy : 0.9011 
+#k6 Accuracy : 0.8874
+
+```
+
+
+## 2-3. Decision Tree
+
+### 2-3-1. Training a decion tree model
+
+```{r fig.width=10, fig.height=8}
+library(rpart)
+library(rpart.plot)
+tree_model_unpruned <- rpart(snow ~ ., data = dta_train, method = "class")
+fancyRpartPlot(tree_model_unpruned, type=2, caption="", palettes=c("PuBu", "OrRd"), tweak=1) 
+```
+
+In the above tree plot, there are 1 root node, 6 internal nodes, and 8 terminal nodes.
+
+* In the root node, at the top of the tree, shows that there are 100% of data within it. Besides, 90% of days don't snow while 10% of days snow. Because most of days don't snow, the word `FALSE` indicates the most common class within this node.
+
+* The first split tests whether `low_temp` is larger than or equalt to 35. If yes, the model move left and predict `FALSE`. There are 71% of data in this node and possibility 1 impies that all of data are belong to the same class. However, if `low_temp` is smaller than 35, the model will move right and goes down to the second split.
+
+* The second split checks whether or not `low_visibility` is larger than or equal to 4.5. If no, the model moves left to the next splits and further inspect the values of `low_visibility` and `high_humidity`. If yes, the model moves right to the subsequent nodes and examine the values of `low_temp` and `high_wind`. Finally, all of observations are assigned to different terminal nodes. 
+* There are 4 terminal nodes that predict `TRUE`, a snow day. The following are specific paths to those terminal nodes: 
+** (1) low_temp < 35 -> low_visibility > 4.5 -> low_visibility > 7.5 -> high_humidity < 73
+** (2) low_temp < 35 -> low_visibility < 4.5 -> low_temp > 29 
+** (2) low_temp < 35 -> low_visibility < 4.5 -> low_temp > 29 -> high_wind > 18
+** (2) low_temp < 35 -> low_visibility < 4.5 -> low_temp > 29 -> high_wind > 18 -> low_temp < 33
+
+
+
+```{r fig.width=8, fig.height=8}
+valid_pred = predict(tree_model_unpruned,newdata = dta_valid, type = "class")
+confusionMatrix(valid_pred, as.factor(dta_valid$snow))
+```
+
+
+We use the validation data to test our model. Accuracy is pretty high, 0.9643. Besides,  Sensitivity(True Positive Rate) is 0.9848, which means we can successfully predict of 98.48 % snow days that will snow.
+
+
+Although our model have a great performance on the validation data, we can we can find a repetition problem in our model. Some predictors, including low_temp and low_visibility, are repeatedly used to tested along a given branch of the tree. For example, we can see in the first path, `low_visibility > 4.5` is followed by `low_visibility > 7.5`. That is, we use the same feature along the same branch.
+
+Reptition makes our model more complex and hard to interpret. Besides, it may cause overfitting problem as well. Therefore, we will prune our tree model through cross validation method.
+
+### 2-3-2. Pruning a decision tree model
+
+This time, we instead use a `train` function in the `caret` package to train our predictive model and specify a `rpart` method, that represents a decision tree method. In addition, to get more accurate results, we use a repeated cross validation method and require our model to perform 10 fold CV three times through defining a `trControl` parameter and setting a `repeatedcv` method. At the same tine, we specify 15 possible values of Complexity Parameter(CP) to evaluate by defining the number of `tuneLength`.
+
+
+```{r}
+train_for_cv = rbind(dta_train, dta_valid)
+trctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+set.seed(123)
+tree_model_pruned <- train(factor(snow) ~., 
+                           data = train_for_cv, 
+                           method = "rpart",
+                           trControl=trctrl,
+                           tuneLength = 15)
+
+plot(tree_model_pruned)
+
+```
+
+By plotting accuracy rates according to different CP, the number goes down rapidly when CP is larger than 0.3.
+
+
+
+```{r}
+tree_model_pruned
+```
+
+If we carefully look at the results of the prunded model, the best accuracy rate is 0.967551 when CP = 0.3231079. The value is higher than the one before pruning the decision tree model.
+
+
+```{r fig.width=8, fig.height=6}
+fancyRpartPlot(tree_model_pruned$finalModel, 
+               caption="", 
+               palettes=c("PuBu", "OrRd"), tweak=1) 
+
+```
+
+
+The pruned tree plot looks much simpler than the previous model and also much easier to interpret. `low_temp` and `low_visibility` are crucial predictors in our model. If `low_temp` is smaller than 35 and `low_visibility` is smaller than 4.5 in a day, then we can predict 84% of probabilities of snow happens in that day.
+
+
+
+
+
+
+
+
+### Random Forest
+
+In order to improve models, we choose one of ensemble methods, random forests, to train our model. Unlike the decision tree method using a single tree to predict, the random forest algorithm generates lost of decision trees through randomly selecting variables and collect results from multiple trees to predict. Usually, random forests can make our model less biased and improve performance.
+
+At first, we apply the `randomForest` function to train our model, and specify the following parameters: 
+* `ntree=500`: generating 500 trees
+* `mtry=3`: sampling 3 variables as candidates at each split
+
+```{r}
+rf_model = randomForest(as.factor(snow) ~ ., 
+                        data = dta_train, 
+                        ntree = 500, 
+                        mtry = 3, 
+                        importance = TRUE)  
+
+rf_pred = predict(rf_model, dta_valid)
+confusionMatrix(rf_pred, as.factor(dta_valid$snow))
+
+```
+
+
+As we can see, the accuracy rate is 0.9643 and the sensitivity rate is 0.9848. The former is slightly higher than  are the same as the values in our unpruned decision tree model. 
+
+To carefully examine how our predictors form a part of prediction power of our random forest model, we make the following variable importance plot.
+
+```{r}
+## variable importance plot
+varImpPlot(rf_model, type = 1)
+importance(rf_model)
+
+```
+
+
+
+From the top to the bottom, predictors are `low_visibility`, `low_temp`, `high_humidity`, `month`, `high_wind`, and `low_sealevel`. The above order of predictors represents the importance of variables. The top one is the most important one. Conversely, the bottom one is the least important one. Mean Decrease Accuracy shows that how much accuracy we will lose if we drop that predictor from our model. 
+
+As we can see, `low_visibility` and `low_temp` are located in the top right side of the plot, and the values of Mean Decrease Accuracy are far higher than the values of other predictors. Therefore, we can conclude that `low_visibility` and `low_temp` are relatively crucial in predictive model. We have the same concludsion in the previous pruned decision tree model.
+
+
+To optimize our model, we will use the `train` function again to tune our model.
+
+```{r}
+trctrl <- trainControl(method="repeatedcv", number=10, repeats = 3)
+
+rf_model_cv <- train(
+  as.factor(snow) ~ .,
+  tuneLength = 3,
+  data = train_for_cv, 
+  method = 'ranger',
+  trControl = trctrl
+)
+
+rf_model_cv$finalModel
+
+```
+
+```{r}
+rf_model_cv$bestTune
+```
+
+Our best  model is to use 9 varaibles at each split (mtry=9) and the minimum size of nodes is 1 (min.node.size=1). Split rule is gini, which means that it suggest to use Gini Index as our varaible selection method. 
+
+\* Note: the value of mtry is larger than the number of predictors because `month` variable become dummy variables and it will produce 12 variables.
+
+
+# Model Interpretation and Reflection
+
+Applying the above models on our testing dataset and gain results as the following:
+(Note: Different computers might generate different results, so please see final results in the word file.)
+
+Confusion Matrices: 
+* Logistic Regression:
+Accuracy : 0.9481  
+Sensitivity : 0.9879           
+Specificity : 0.5833
+
+```{r fig.width=8, fig.height=7}
+logit_test_pred = predict(train_logit4, newdata=dta_test.2)
+logit_test_pred <- as.factor(ifelse(logit_test_pred > 0.5, TRUE, FALSE))
+confusionMatrix(logit_test_pred, as.factor(dta_test.2$snow))
+
+```
+
+* KNN:
+Accuracy : 0.8907
+Sensitivity : 0.8879          
+Specificity : 0.9167 
+
+```{r fig.width=8, fig.height=7}
+knn_test_pred <-  knn(dta_train_knn_X, dta_test_knn_X, dta_train_knn$snow, k=3)
+confusionMatrix(knn_test_pred, as.factor(dta_test_knn$snow))
+
+
+```
+
+
+
+* Decision Tree Model:
+Accuracy: 0.9536
+Sensitivity: 0.9788
+Specificity: 0.7222
+
+```{r fig.width=8, fig.height=7}
+tree_test_pred = predict(tree_model_pruned, newdata=dta_test)
+confusionMatrix(tree_test_pred, as.factor(dta_test$snow))
+
+```
+
+
+* Random Forest Model:
+Accuracy: 0.9536
+Sensitivity: 0.9848
+Specificity: 0.9644
+
+
+```{r}
+rf_test_pred = predict(rf_model_cv, newdata=dta_test)
+confusionMatrix(rf_test_pred, as.factor(dta_test$snow))
+
+```
+
+ * Interpretation: 
+Specificity measures the proportion of non-snow events that were correctly predicted to be non-snow days to the total number of non-snow days/events in our data set. Sensitivity measures the proportion of correctly predicted/identified snow days to the total number of snow days/events. Accuracy, measures the the proportion of correctly predicted events (both snow and non-snow) to the total number of all days in the dataset. 
+
+In this case, the purpose is to accurately predict snow days. We sholud focus on the values of sensitivity to compare above models. Thus, out best model is the logistic regression model, which has 98.79% sensitivity.
+
+
+ * Overfitting: 
+ We tried to limit overfitting first by looking at confusion matrices, but also by stopping early before we hit the point where we tailor our models too much to fit the training data. 
+ 
+ 
+ * Applications:
+ We see one function for this model. It could be utilized by scientists or government agencies that care about snow. Engineers could possibly also care about how it impacts structures during and after building them. The model we created (or a good snow prediction model) could help those entities to some extent plan around predicting whether it will snow or not for future far away dates if they have the independent variables we relied on. In addition, whether it snows or not could also be an indicator of global warming trends that are witnessing and this could help us understand the degree to which global warming has started impacting us. 
+ 
